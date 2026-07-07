@@ -940,6 +940,18 @@ export const cliOptionsConfig: VitestCLIOptions = {
       preParse: {
         description: 'Parse test specifications before running them. This will apply `.only` flag and test name pattern across all files without running them. (default: `false`)',
       },
+      diagnostics: {
+        description: 'Print performance hints after the run when a configuration change would make it significantly faster. Hints never suggest changing options that were set explicitly. (default: `true`)',
+        argument: '',
+        subcommands: {
+          isolate: {
+            description: 'Print a hint estimating how much time `isolate: false` would save when `isolate: true` spends a significant amount of time spawning a worker per test file. (default: `true`)',
+          },
+          environment: {
+            description: 'Print a hint when re-creating a DOM environment for every test file dominates the run and a `vm` pool would set it up once per worker. (default: `true`)',
+          },
+        },
+      },
     },
   },
   // disable CLI options

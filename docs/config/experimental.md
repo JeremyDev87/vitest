@@ -513,3 +513,53 @@ const tags = getTags()
 test('my test', { tags }, () => {})
 ```
 :::
+
+## experimental.diagnostics <Version type="experimental">5.0.0</Version> {#experimental-diagnostics}
+
+- **Type:**
+
+```ts
+interface DiagnosticsOptions {
+  /**
+   * Hint when `isolate: true` spends a significant amount of time spawning
+   * a fresh worker (and re-creating the environment) for every test file,
+   * estimating how much `isolate: false` could save.
+   * @default true
+   */
+  isolate?: boolean
+  /**
+   * Hint when re-creating a DOM environment for every test file dominates
+   * the run and a `vm` pool would set it up once per worker.
+   * @default true
+   */
+  environment?: boolean
+}
+```
+
+- **Default:** `true`
+
+Print performance hints after the run when the collected timings show that a configuration change would make the run significantly faster:
+
+```
+Environment  jsdom was created 40 times · 23.80s total, 79% of tracked time
+             create it once per worker with pool: 'vmThreads' (keeps per-file isolation) or isolate: false (shares it across files)
+             learn more: https://vitest.dev/guide/improving-performance#test-environments
+```
+
+Hints never suggest changing an option that was set explicitly - if the config defines `pool`, Vitest assumes it was a deliberate choice and won't suggest a different one, and an explicitly configured `isolate` is never suggested to be disabled. Hints are also printed in CI, where the cost of a slow configuration matters most. Set the option to `false` to disable all hints, or disable them individually.
+
+To measure the impact of a configuration change instead of estimating it, run [`vitest doctor`](/guide/cli#vitest-doctor).
+
+### experimental.diagnostics.isolate {#experimental-diagnostics-isolate}
+
+- **Type:** `boolean`
+- **Default:** `true`
+
+Hint when `isolate: true` spends a significant amount of time spawning a fresh worker (and re-creating the environment) for every test file, estimating how much `isolate: false` could save.
+
+### experimental.diagnostics.environment {#experimental-diagnostics-environment}
+
+- **Type:** `boolean`
+- **Default:** `true`
+
+Hint when re-creating a DOM environment for every test file dominates the run and a `vm` pool would set it up once per worker.

@@ -25,6 +25,20 @@ export class StateManager {
   reportedTasksMap: WeakMap<Task, TestModule | TestCase | TestSuite> = new WeakMap()
   blobs?: MergedBlobs
   transformTime = 0
+  /**
+   * Time spent transforming modules, split by project name. Used by
+   * performance diagnostics to relate a project's environment cost to the
+   * rest of its tracked time.
+   */
+  transformTimes: Map<string, number> = new Map()
+  /**
+   * Total time spent starting test workers (spawning the process/thread, loading
+   * the worker bundle and setting up the test environment). Used to surface the
+   * cost of `isolate: true`, which spawns a fresh worker per test file.
+   */
+  startupTime = 0
+  /** Number of test workers that were started during the run. */
+  workersSpawned = 0
 
   metadata: Record<string, {
     externalized: Record<string, string>

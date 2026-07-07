@@ -123,6 +123,44 @@ tests/test2.test.ts
 
 Since Vitest 4.1, you may pass `--static-parse` to [parse test files](/api/advanced/vitest#parsespecifications) instead of running them to collect tests. Vitest parses test files with limited concurrency, defaulting to `os.availableParallelism()`. You can change it via the `--static-parse-concurrency` option.
 
+### `vitest doctor`
+
+`vitest doctor` measures how much faster the test suite would run under alternative configurations by actually running it under each of them - the candidates are picked based on the current config:
+
+```bash
+vitest doctor
+```
+
+```
+Results (min of 3 runs each)
+
+  baseline (pool: forks · isolate: true)  4.08s
+  pool: 'threads'                         3.64s (-11%)
+  pool: 'vmThreads'                       1.33s (-67%)
+  isolate: false                          1.28s (-69%)
+
+Recommendation: pool: 'vmThreads' (-67%)
+
+  // vitest.config.ts
+  import { defineConfig } from 'vitest/config'
+
+  export default defineConfig({
+    test: {
+      pool: 'vmThreads', // measured -67% on this suite
+    },
+  })
+```
+
+The `isolate: false` candidate is additionally validated by running the suite twice with a shuffled file order - if any test depends on isolation, the candidate is reported as failed instead of recommended. When several candidates are close to the fastest, doctor prefers the one that keeps per-file isolation.
+
+Doctor also probes lower [`maxWorkers`](/config/maxworkers) values on top of the winning configuration: every worker funnels its transform requests through the single main-thread Vite server, so past a certain count more workers make the run slower, not faster. Starting from half the current worker count, doctor keeps halving while the suite gets at least 5% faster, and includes the winning value in the recommendation.
+
+A failing candidate is as informative as a fast one: doctor prints an excerpt of its errors, so "this suite cannot run on `vmThreads`" comes with the failing tests and the reason. If the suite fails under the *current* configuration, doctor aborts and shows the errors - it needs a green baseline to compare against.
+
+Short suites are measured multiple times and the best time is reported, so the comparison reflects a warm steady state. Since doctor runs the full suite several times, expect it to take a multiple of a normal run's time. See [Improving Performance](/guide/improving-performance) for the trade-offs behind every candidate.
+
+"Keep the current configuration" is always a measured verdict, not an assumption: even when the config already uses the fastest setup Vitest knows how to compare, doctor still runs the suite and reports the baseline time. Configs on a `vm` pool are compared against `pool: 'threads'` with `isolate: false` - reused workers with shared state are their honest competitor.
+
 ## Shell Autocompletions
 
 Vitest provides shell autocompletions for commands, options, and option values powered by [`@bomb.sh/tab`](https://github.com/bombshell-dev/tab).

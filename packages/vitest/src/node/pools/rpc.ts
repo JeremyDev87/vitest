@@ -43,7 +43,9 @@ export function createMethodsRPC(project: TestProject, methodsOptions: MethodsOp
 
       return await project._fetcher(url, importer, environment, cacheFs, options, otelCarrier).then((result) => {
         const duration = performance.now() - start
-        project.vitest.state.transformTime += duration
+        const state = project.vitest.state
+        state.transformTime += duration
+        state.transformTimes.set(project.name, (state.transformTimes.get(project.name) || 0) + duration)
         const metadata = project.vitest.state.metadata[project.name]
         if ('externalize' in result) {
           metadata.externalized[url] = result.externalize

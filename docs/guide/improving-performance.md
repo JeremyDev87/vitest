@@ -1,5 +1,27 @@
 # Improving Performance
 
+## Profile First
+
+The right optimization depends on where your run actually spends its time, and Vitest tells you after every run. The `Duration` line of the summary breaks the run down into phases, as percentages of all tracked time:
+
+```
+Duration  3.76s (environment 79%, import 14%, transform 6%, tests 1%)
+```
+
+The percentages are relative to the sum of all tracked phases, not to the wall-clock time - phases run in parallel workers, so their sum is usually larger than the run itself. Note that in a multi-project setup the percentages average over all [projects](/guide/projects), so a phase that dominates one project can be diluted by the others - the performance hints below still analyze each project separately.
+
+The phases map to configuration levers:
+
+- `environment` — creating the test environment (`jsdom`, `happy-dom`) for test files. See [Test Environments](#test-environments).
+- `transform` — transforming files with Vite. See [Caching Between Reruns](#caching-between-reruns).
+- `import` — importing test files and their modules.
+- `setup` — running [`setupFiles`](/config/setupfiles).
+- `tests` — running the tests themselves. If this dominates, your configuration is already healthy.
+
+When the collected timings show that a configuration change would make the run significantly faster, Vitest also prints a hint after the summary - see [`experimental.diagnostics`](/config/experimental#experimental-diagnostics). Hints never suggest changing an option you set explicitly.
+
+To go from an estimate to a measurement, run [`vitest doctor`](/guide/cli#vitest-doctor): it runs your suite under the alternative configurations and reports a measured comparison, including whether your tests survive `isolate: false`.
+
 ## Test Isolation
 
 By default Vitest runs every test file in an isolated environment based on the [pool](/config/pool):
@@ -73,6 +95,31 @@ export default defineConfig({
 ```
 :::
 
+## Test Environments
+
+DOM environments are expensive to create: `jsdom` costs roughly 200-500ms per import and `happy-dom` roughly 90-200ms, plus the time to construct the window. With an isolating pool (the default), that price is paid for **every test file**, because every file gets a fresh worker. On DOM-heavy suites this is routinely the single largest cost of the run - look for a dominant `environment` share in the `Duration` breakdown.
+
+There are three ways out, with different trade-offs:
+
+| configuration | environment created | isolation | trade-off |
+|---|---|---|---|
+| `pool: 'forks'`/`'threads'` + `isolate: true` (default) | once per file | fresh process/thread and environment per file | safest, slowest |
+| `pool: 'vmThreads'` | once per worker | fresh VM context and `window` per file | test code runs in a VM realm: cross-realm `instanceof` edge cases with externalized packages, and memory is not reclaimed as reliably (see [`vmMemoryLimit`](/config/vmmemorylimit)) |
+| `isolate: false` | once per worker | none - files in the same worker share the environment and module state | tests must not depend on a clean `window` or module state; run `vitest doctor` to check |
+
+```ts [vitest.config.js]
+import { defineConfig } from 'vitest/config'
+
+export default defineConfig({
+  test: {
+    environment: 'jsdom',
+    pool: 'vmThreads', // environment per worker, fresh window per file
+  },
+})
+```
+
+As a rule of thumb: prefer `isolate: false` with `threads` if your tests tolerate shared state - it is the fastest option and keeps memory behavior simple. Use `vmThreads` when you need every file to get a fresh `window` but the per-file environment cost dominates your run. And if you don't depend on jsdom specifics, `happy-dom` is considerably cheaper to create in every setup.
+
 ## Limiting Directory Search
 
 You can limit the working directory when Vitest searches for files using [`test.dir`](/config/dir) option. This should make the search faster if you have unrelated folders and files in the root directory.
@@ -85,10 +132,10 @@ This improvement is most noticeable when rerunning a small number of tests that 
 
 ```shell
 # the first run
-Duration  8.75s (transform 4.02s, setup 629ms, import 5.52s, tests 2.52s, environment 0ms, prepare 3ms)
+Duration  8.75s (import 43%, transform 32%, tests 20%, setup 5%)
 
 # the second run
-Duration  5.90s (transform 842ms, setup 543ms, import 2.35s, tests 2.94s, environment 0ms, prepare 3ms)
+Duration  5.90s (tests 44%, import 35%, transform 13%, setup 8%)
 ```
 
 ## Pool

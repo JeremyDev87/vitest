@@ -980,6 +980,26 @@ export interface InlineConfig {
      * This will apply `.only` flag and test name pattern across all files without running them.
      */
     preParse?: boolean
+
+    /**
+     * Print performance hints after the run when the collected timings show
+     * that a configuration change would make the run significantly faster.
+     * Hints are never printed for options that were set explicitly.
+     *
+     * Set to `false` to disable all hints, or disable them individually:
+     * - `isolate`: hint when `isolate: true` spends a significant amount of
+     *   time spawning a fresh worker (and re-creating the environment) for
+     *   every test file, estimating how much `isolate: false` could save.
+     * - `environment`: hint when re-creating a DOM environment for every test
+     *   file dominates the run and a `vm` pool would set it up once per worker.
+     * @default true
+     */
+    diagnostics?: boolean | {
+      /** @default true */
+      isolate?: boolean
+      /** @default true */
+      environment?: boolean
+    }
   }
 
   /**
@@ -1236,7 +1256,7 @@ export interface ResolvedConfig
   tagsFilter?: string[]
   mergeReportsLabel?: string
 
-  experimental: Omit<Required<UserConfig>['experimental'], 'importDurations'> & {
+  experimental: Omit<Required<UserConfig>['experimental'], 'importDurations' | 'diagnostics'> & {
     importDurations: {
       print: boolean | 'on-warn'
       limit: number
@@ -1246,6 +1266,22 @@ export interface ResolvedConfig
         danger: number
       }
     }
+    diagnostics: {
+      isolate: boolean
+      environment: boolean
+    }
+  }
+
+  /**
+   * Options that were explicitly provided by the user, as opposed to resolved
+   * defaults. Used by diagnostics to avoid suggesting changes to options the
+   * user chose deliberately.
+   * @internal
+   */
+  providedOptions: {
+    pool: boolean
+    isolate: boolean
+    environment: boolean
   }
 
   cliOptions: CliOptions

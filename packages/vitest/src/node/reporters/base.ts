@@ -6,6 +6,7 @@ import type { TestSpecification } from '../test-specification'
 import type { Reporter, TestRunEndReason } from '../types/reporter'
 import type { TestCase, TestCollection, TestModule, TestModuleState, TestResult, TestSuite, TestSuiteState } from './reported-tasks'
 import { readFileSync } from 'node:fs'
+import { availableParallelism } from 'node:os'
 import { performance } from 'node:perf_hooks'
 import { toArray } from '@vitest/utils/helpers'
 import { parseStacktrace } from '@vitest/utils/source-map'
@@ -15,6 +16,8 @@ import { groupBy } from '../../utils/base'
 import { isTTY } from '../../utils/env'
 import { getSuites, getTestName, getTests, hasFailed, hasFailedSnapshot } from '../../utils/tasks'
 import { generateCodeFrame, printStack } from '../printError'
+import { getEnvironmentDiagnostics, isSavingWorthHinting } from './diagnostics'
+import { computeDurationBreakdown, formatDurationBreakdown } from './durationBreakdown'
 import { BENCH_TABLE_HEAD, computeBenchColumnWidths, padBenchRow, renderBenchmarkRow } from './renderers/benchmark-table'
 import { F_CHECK, F_DOWN_RIGHT, F_POINTER } from './renderers/figures'
 import {
@@ -638,20 +641,16 @@ export abstract class BaseReporter implements Reporter {
       // Execution time is either sum of all runs of `--merge-reports` or the current run's time
       const executionTime = blobs?.executionTimes ? sum(blobs.executionTimes, time => time) : this.end - this.start
 
-      const environmentTime = sum(files, file => file.environmentLoad)
-      const transformTime = this.ctx.state.transformTime
-      const typecheck = sum(this.ctx.projects, project => project.typechecker?.getResult().time)
+      const breakdown = computeDurationBreakdown({
+        files,
+        transformTime: this.ctx.state.transformTime,
+        typecheckTime: sum(this.ctx.projects, project => project.typechecker?.getResult().time),
+      })
 
-      const timers = [
-        `transform ${formatTime(transformTime)}`,
-        `setup ${formatTime(setupTime)}`,
-        `import ${formatTime(collectTime)}`,
-        `tests ${formatTime(testsTime)}`,
-        `environment ${formatTime(environmentTime)}`,
-        typecheck && `typecheck ${formatTime(typecheck)}`,
-      ].filter(Boolean).join(', ')
-
-      this.log(padSummaryTitle('Duration'), formatTime(executionTime) + c.dim(` (${timers})`))
+      // percentages are relative to the sum of all tracked phases: phases run
+      // in parallel workers, so their sum is not comparable to the wall time
+      const timers = breakdown.total > 0 ? formatDurationBreakdown(breakdown) : ''
+      this.log(padSummaryTitle('Duration'), formatTime(executionTime) + (timers ? c.dim(` (${timers})`) : ''))
 
       if (blobs?.executionTimes) {
         this.log(padSummaryTitle('Per blob') + blobs.executionTimes.map(time => ` ${formatTime(time)}`).join(''))
@@ -660,7 +659,167 @@ export abstract class BaseReporter implements Reporter {
 
     this.reportImportDurations()
 
+    const environmentHinted = this.reportEnvironmentDiagnostic(files)
+    if (!environmentHinted) {
+      this.reportIsolateDiagnostic(files)
+    }
+
     this.log()
+  }
+
+  private getEffectiveMaxWorkers(): number {
+    const configured = this.ctx.config.maxWorkers
+    return typeof configured === 'number' && configured > 0
+      ? configured
+      : Math.max(1, availableParallelism() - 1)
+  }
+
+  /**
+   * Surfaces the cost of re-creating a DOM environment for every test file:
+   * with an isolating pool, `jsdom`/`happy-dom` are imported and set up once
+   * per file. When that repeated setup dominates the run, hint that a `vm`
+   * pool sets the environment up once per worker while keeping per-file
+   * isolation, and that `isolate: false` shares it across files.
+   */
+  private reportEnvironmentDiagnostic(files: File[]): boolean {
+    // merged blob reports replay durations of past runs: no environments were
+    // created by this process, and the per-project transform split needed for
+    // an accurate share is not part of the blob format
+    if (this.ctx.config.watch || this.ctx.state.blobs || !this.ctx.config.experimental.diagnostics.environment) {
+      return false
+    }
+
+    const executionTime = this.end - this.start
+    const maxWorkers = this.getEffectiveMaxWorkers()
+    const transformTimes = this.ctx.state.transformTimes
+    const inputs = this.ctx.projects.map((project) => {
+      const projectFiles = files.filter(file => (file.projectName || '') === project.name)
+      let environmentTime = 0
+      let environmentCount = 0
+      let trackedTime = transformTimes.get(project.name) || 0
+      for (const file of projectFiles) {
+        if (file.environmentLoad) {
+          environmentTime += file.environmentLoad
+          environmentCount++
+        }
+        trackedTime
+          += (file.environmentLoad || 0)
+            + (file.setupDuration || 0)
+            + (file.collectDuration || 0)
+            + (file.result?.duration || 0)
+      }
+      return {
+        name: project.name,
+        environment: project.config.environment,
+        pool: project.config.pool,
+        isolate: project.config.isolate,
+        browser: project.config.browser.enabled,
+        poolProvided: project.config.providedOptions.pool,
+        isolateProvided: project.config.providedOptions.isolate,
+        environmentTime,
+        environmentCount,
+        trackedTime,
+        parallelism: Math.max(1, Math.min(environmentCount, maxWorkers)),
+        executionTime,
+      }
+    })
+
+    const diagnostics = getEnvironmentDiagnostics(inputs)
+    if (!diagnostics.length) {
+      return false
+    }
+
+    for (const diagnostic of diagnostics) {
+      const project = this.ctx.projects.find(p => p.name === diagnostic.name)
+      this.log()
+      this.log(
+        padSummaryTitle('Environment'),
+        formatProjectName(project)
+        + c.yellow(`${diagnostic.environment} was created ${diagnostic.environmentCount} times`)
+        + c.dim(` · ${formatTime(diagnostic.environmentTime)} total, ${Math.round(diagnostic.share * 100)}% of tracked time`),
+      )
+      const alternative = diagnostic.suggestIsolate
+        ? c.dim(' (keeps per-file isolation) or ') + c.yellow('isolate: false') + c.dim(' (shares it across files)')
+        : c.dim(' (keeps per-file isolation)')
+      this.log(
+        padSummaryTitle(''),
+        c.dim('create it once per worker with ')
+        + c.yellow(`pool: 'vmThreads'`)
+        + alternative,
+      )
+      this.log(
+        padSummaryTitle(''),
+        c.dim('learn more: https://vitest.dev/guide/improving-performance#test-environments'),
+      )
+    }
+
+    return true
+  }
+
+  /**
+   * Surfaces the cost of `isolate: true`: with isolation enabled Vitest spawns a
+   * fresh worker (and re-creates the test environment) for every test file. When
+   * that repeated startup cost is significant, hint that `isolate: false` would
+   * reuse workers across files.
+   */
+  private reportIsolateDiagnostic(files: File[]): void {
+    // opt-out via `experimental.diagnostics.isolate`; the timers it relies on
+    // are only shown for a full (non-watch) run
+    if (this.ctx.config.watch || !this.ctx.config.experimental.diagnostics.isolate) {
+      return
+    }
+
+    const state = this.ctx.state
+    const numWorkers = state.workersSpawned
+    // only meaningful when at least one non-browser project isolates workers
+    // without the user having explicitly chosen isolation
+    const isolates = this.ctx.projects.some(
+      project => project.config.isolate
+        && !project.config.browser.enabled
+        && !project.config.providedOptions.isolate,
+    )
+    if (!numWorkers || !isolates) {
+      return
+    }
+
+    const numFiles = files.length
+    // `startupTime` is the summed (across workers) time spent spawning the worker,
+    // loading its bundle and setting up the environment. The environment setup is
+    // already part of this window, so it is not added separately.
+    const startupTime = state.startupTime
+    const avgStartup = startupTime / numWorkers
+
+    // with `isolate: false` the same files would run in ~`parallelism` reused
+    // workers instead of spawning a fresh worker for every file
+    const parallelism = Math.max(1, Math.min(numFiles, this.getEffectiveMaxWorkers()))
+
+    // nothing was actually spawned per-file (e.g. a single worker handled everything)
+    if (numWorkers <= parallelism) {
+      return
+    }
+
+    // Spawns are spread across ~`parallelism` lanes, so the wall-clock cost is the
+    // summed startup divided by parallelism. Reusing workers leaves ~1 spawn per
+    // lane, so the reducible wall-clock time is the rest.
+    const wallStartup = startupTime / parallelism
+    const estimatedSavings = wallStartup - avgStartup
+
+    if (!isSavingWorthHinting(estimatedSavings, this.end - this.start)) {
+      return
+    }
+
+    this.log()
+    this.log(
+      padSummaryTitle('Isolate'),
+      c.yellow(`${numWorkers} workers spawned`)
+      + c.dim(` · ~${formatTime(avgStartup)} startup each (spawn + environment, per file)`),
+    )
+    this.log(
+      padSummaryTitle(''),
+      c.dim(`~${formatTime(estimatedSavings)} faster with `)
+      + c.yellow('isolate: false')
+      + c.dim(' — reuses workers across files instead of one per file'),
+    )
   }
 
   private reportImportDurations() {

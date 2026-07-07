@@ -170,6 +170,21 @@ function resolveInlineWorkerOption(value: string | number): number {
   }
 }
 
+/**
+ * Records which options the user provided explicitly. Must be computed from
+ * the raw user config sources BEFORE `configDefaults` is merged in - the
+ * merged object cannot distinguish a default from a user-provided value.
+ */
+export function captureProvidedOptions(
+  ...sources: (UserConfig | undefined)[]
+): ResolvedConfig['providedOptions'] {
+  return {
+    pool: sources.some(source => source?.pool != null),
+    isolate: sources.some(source => source?.isolate != null),
+    environment: sources.some(source => source?.environment != null || source?.dom),
+  }
+}
+
 // warn only once, check one PER PROCESS, not per instance,
 // that's why it's on a module-level
 let warnedTypeCheck = false
@@ -205,8 +220,18 @@ export function resolveTestConfig(
     options.environment = 'happy-dom'
   }
 
+  // provenance must be captured from the raw options BEFORE `configDefaults`
+  // is merged in - the merged object cannot distinguish a default from a
+  // user-provided value; `viteConfig.test` is not resolved yet at this point,
+  // the call sites assign the resolved config to it after this function returns
+  const providedOptions = captureProvidedOptions(
+    options,
+    viteConfig.test as UserConfig | undefined,
+  )
+
   const resolved = deepMerge({}, configDefaults, options) as ResolvedConfig
   resolved.root = viteConfig.root
+  resolved.providedOptions = providedOptions
 
   // Coverage is collected once for the whole run using the root config, so projects
   // share its resolved coverage. Each project's setup/test/config files are then
@@ -990,6 +1015,15 @@ export function resolveTestConfig(
   resolved.experimental.importDurations.thresholds ??= {} as any
   resolved.experimental.importDurations.thresholds.warn ??= 100
   resolved.experimental.importDurations.thresholds.danger ??= 500
+
+  const diagnostics = (resolved.experimental.diagnostics as boolean | { isolate?: boolean; environment?: boolean } | undefined)
+    ?? true
+  resolved.experimental.diagnostics = typeof diagnostics === 'boolean'
+    ? { isolate: diagnostics, environment: diagnostics }
+    : {
+        isolate: diagnostics.isolate ?? true,
+        environment: diagnostics.environment ?? true,
+      }
 
   if (typeof resolved.experimental.vcsProvider === 'string' && resolved.experimental.vcsProvider !== 'git') {
     resolved.experimental.vcsProvider = resolvePath(resolved.experimental.vcsProvider, resolved.root)
