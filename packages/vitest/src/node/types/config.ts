@@ -992,6 +992,11 @@ export interface InlineConfig {
      *   every test file, estimating how much `isolate: false` could save.
      * - `environment`: hint when re-creating a DOM environment for every test
      *   file dominates the run and a `vm` pool would set it up once per worker.
+     * - `import`: hint when test files repeatedly evaluate the same module
+     *   graph (typical for barrel-file imports) and `isolate: false` would
+     *   evaluate it once per worker.
+     * - `transform`: hint when transforming modules dominates the run and
+     *   `experimental.fsModuleCache` would persist the results across runs.
      * @default true
      */
     diagnostics?: boolean | {
@@ -999,6 +1004,10 @@ export interface InlineConfig {
       isolate?: boolean
       /** @default true */
       environment?: boolean
+      /** @default true */
+      import?: boolean
+      /** @default true */
+      transform?: boolean
     }
   }
 
@@ -1269,6 +1278,8 @@ export interface ResolvedConfig
     diagnostics: {
       isolate: boolean
       environment: boolean
+      import: boolean
+      transform: boolean
     }
   }
 
@@ -1282,6 +1293,7 @@ export interface ResolvedConfig
     pool: boolean
     isolate: boolean
     environment: boolean
+    fsModuleCache: boolean
   }
 
   cliOptions: CliOptions

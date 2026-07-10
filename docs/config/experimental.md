@@ -533,6 +533,19 @@ interface DiagnosticsOptions {
    * @default true
    */
   environment?: boolean
+  /**
+   * Hint when test files repeatedly evaluate the same module graph
+   * (typical for barrel-file imports) and `isolate: false` would
+   * evaluate it once per worker.
+   * @default true
+   */
+  import?: boolean
+  /**
+   * Hint when transforming modules dominates the run and
+   * `experimental.fsModuleCache` would persist the results across runs.
+   * @default true
+   */
+  transform?: boolean
 }
 ```
 
@@ -563,3 +576,23 @@ Hint when `isolate: true` spends a significant amount of time spawning a fresh w
 - **Default:** `true`
 
 Hint when re-creating a DOM environment for every test file dominates the run and a `vm` pool would set it up once per worker.
+
+### experimental.diagnostics.import {#experimental-diagnostics-import}
+
+- **Type:** `boolean`
+- **Default:** `true`
+
+Hint when test files repeatedly evaluate the same module graph and `isolate: false` would evaluate it once per worker. This is typical for barrel-file imports: every test file imports a few symbols through an index file and pays for the whole library behind it. The duplication is measured from how often each module was served to the workers, so suites whose test files import mostly disjoint modules stay quiet - reusing workers would not reduce their import work.
+
+```
+Import  837 modules were evaluated 16740 times · 15.69s total, 64% of tracked time
+        ~850ms faster with isolate: false — shared modules are evaluated once per worker instead of once per file
+        learn more: https://vitest.dev/guide/improving-performance#test-isolation
+```
+
+### experimental.diagnostics.transform {#experimental-diagnostics-transform}
+
+- **Type:** `boolean`
+- **Default:** `true`
+
+Hint when transforming modules dominates the run. Without a persistent cache every `vitest run` transforms the whole module graph from scratch; [`experimental.fsModuleCache`](#experimental-fsmodulecache) stores the results on disk so repeated runs skip them. The hint estimates the time the *next* run would save.

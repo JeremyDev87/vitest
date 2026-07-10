@@ -11,6 +11,12 @@ export interface DoctorProjectSummary {
   environment: string
   isolate: boolean
   browser: boolean
+  fsModuleCache: boolean
+}
+
+export interface DoctorCandidateOptions {
+  /** `happy-dom` is resolvable, so the environment candidate can actually run. */
+  happyDomAvailable?: boolean
 }
 
 export interface DoctorCandidate {
@@ -25,6 +31,11 @@ export interface DoctorCandidate {
   preservesIsolation: boolean
   /** Run extra shuffled passes to check that tests survive shared state. */
   validateIsolation?: boolean
+  /**
+   * Untimed runs before the measured ones. Used for candidates whose benefit
+   * only shows once a persistent cache is populated.
+   */
+  primeRuns?: number
 }
 
 const DOM_ENVIRONMENTS = new Set(['jsdom', 'happy-dom'])
@@ -36,6 +47,7 @@ const DOM_ENVIRONMENTS = new Set(['jsdom', 'happy-dom'])
  */
 export function resolveDoctorCandidates(
   projects: DoctorProjectSummary[],
+  options: DoctorCandidateOptions = {},
 ): DoctorCandidate[] {
   const candidates: DoctorCandidate[] = []
   const testProjects = projects.filter(project => !project.browser)
@@ -70,6 +82,18 @@ export function resolveDoctorCandidates(
       preservesIsolation: true,
     })
   }
+  // `--environment` overrides every project at once, so the swap is only fair
+  // when the whole workspace runs jsdom; jsdom -> happy-dom is the only swap
+  // with a speed upside
+  if (options.happyDomAvailable && testProjects.every(project => project.environment === 'jsdom')) {
+    candidates.push({
+      id: 'happy-dom',
+      title: `environment: 'happy-dom'`,
+      args: ['--environment=happy-dom'],
+      configLines: [`environment: 'happy-dom'`],
+      preservesIsolation: true,
+    })
+  }
   if (isolates) {
     candidates.push({
       id: 'no-isolate',
@@ -89,6 +113,18 @@ export function resolveDoctorCandidates(
       configLines: [`pool: 'threads'`, 'isolate: false'],
       preservesIsolation: false,
       validateIsolation: true,
+    })
+  }
+  if (testProjects.every(project => !project.fsModuleCache)) {
+    // an untimed priming run populates the cache first: the candidate measures
+    // what repeated runs pay, which is what doctor compares everywhere else
+    candidates.push({
+      id: 'fs-cache',
+      title: 'fsModuleCache: true',
+      args: ['--experimental.fsModuleCache'],
+      configLines: ['experimental: { fsModuleCache: true }'],
+      preservesIsolation: true,
+      primeRuns: 1,
     })
   }
 
@@ -131,6 +167,7 @@ export async function doctor(cliFilters: string[], options: CliOptions): Promise
     environment: project.config.environment,
     isolate: project.config.isolate,
     browser: project.config.browser.enabled,
+    fsModuleCache: project.config.experimental.fsModuleCache === true,
   }))
   const fileCount = (await ctx.getRelevantTestSpecifications(cliFilters)).length
   const configuredMaxWorkers = ctx.config.maxWorkers
@@ -139,7 +176,16 @@ export async function doctor(cliFilters: string[], options: CliOptions): Promise
     : Math.max(1, availableParallelism() - 1)
   await ctx.close()
 
-  const candidates = resolveDoctorCandidates(projects)
+  // the environments import 'happy-dom' relative to the vitest package (it is
+  // a peer dependency), so resolving from here mirrors what a run would do
+  let happyDomAvailable = false
+  try {
+    import.meta.resolve('happy-dom')
+    happyDomAvailable = true
+  }
+  catch {}
+
+  const candidates = resolveDoctorCandidates(projects, { happyDomAvailable })
 
   const testProjects = projects.filter(project => !project.browser)
   const browserProjects = projects.filter(project => project.browser)
@@ -284,6 +330,11 @@ export async function doctor(cliFilters: string[], options: CliOptions): Promise
     let wall = Number.POSITIVE_INFINITY
     let ok = true
     let stderr = ''
+    for (let i = 0; i < (candidate.primeRuns ?? 0) && ok; i++) {
+      const run = await runVitest(candidate.args, candidateTimeout)
+      ok = run.ok
+      stderr = run.stderr
+    }
     for (let i = 0; i < reps && ok; i++) {
       const run = await runVitest(candidate.args, candidateTimeout)
       wall = Math.min(wall, run.wall)
@@ -487,6 +538,16 @@ function candidateNotes(result: MeasuredCandidate): string[] {
       return [
         `The suite passed twice with a shuffled file order under shared state, so it is`,
         `likely - but not guaranteed - that no test depends on isolation.`,
+      ]
+    case 'happy-dom':
+      return [
+        `happy-dom implements the DOM differently than jsdom: the suite passed under it,`,
+        `but double-check tests that depend on layout, navigation or other DOM edge cases.`,
+      ]
+    case 'fs-cache':
+      return [
+        `The experimental fs module cache persists transformed modules on disk: repeated`,
+        `runs skip the transforms, the first run after a file change still pays them.`,
       ]
     default:
       return []

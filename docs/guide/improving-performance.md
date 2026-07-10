@@ -14,7 +14,7 @@ The phases map to configuration levers:
 
 - `environment` — creating the test environment (`jsdom`, `happy-dom`) for test files. See [Test Environments](#test-environments).
 - `transform` — transforming files with Vite. See [Caching Between Reruns](#caching-between-reruns).
-- `import` — importing test files and their modules.
+- `import` — importing test files and their modules. When files import mostly the same modules (typical for barrel-file imports), isolation re-evaluates that shared graph for every file. See [Test Isolation](#test-isolation).
 - `setup` — running [`setupFiles`](/config/setupfiles).
 - `tests` — running the tests themselves. If this dominates, your configuration is already healthy.
 

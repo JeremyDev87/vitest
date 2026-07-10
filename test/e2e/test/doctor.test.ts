@@ -17,8 +17,11 @@ test('doctor measures alternative configurations and reports a table', async () 
   // node environment on forks: threads and isolate:false are worth measuring
   expect(stdout).toContain(`measuring pool: 'threads'`)
   expect(stdout).toContain('measuring isolate: false')
-  // the DOM candidate is not: there is nothing to amortize
+  // the fs module cache is off, so persisting transforms is worth measuring
+  expect(stdout).toContain('measuring fsModuleCache: true')
+  // the DOM candidates are not: there is nothing to amortize or swap
   expect(stdout).not.toContain('vmThreads')
+  expect(stdout).not.toContain('happy-dom')
 
   expect(stdout).toContain('Results (min of 3 runs each)')
   expect(stdout).toMatch(/Recommendation: /)
@@ -40,4 +43,6 @@ test('doctor reports the errors of failing candidates', async () => {
   expect(stdout).toContain('FAIL  vm-hostile.test.ts > does not run under a vm pool')
   // the failing candidate is never recommended
   expect(stdout).not.toMatch(/Recommendation: pool: 'vmThreads'/)
+  // an all-jsdom suite also measures the happy-dom swap
+  expect(stdout).toContain(`measuring environment: 'happy-dom'`)
 }, 120_000)

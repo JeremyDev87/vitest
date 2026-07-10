@@ -985,3 +985,17 @@ Print a hint estimating how much time `isolate: false` would save when `isolate:
 - **Config:** [experimental.diagnostics.environment](/config/experimental#experimental-diagnostics-environment)
 
 Print a hint when re-creating a DOM environment for every test file dominates the run and a `vm` pool would set it up once per worker. (default: `true`)
+
+### experimental.diagnostics.import
+
+- **CLI:** `--experimental.diagnostics.import`
+- **Config:** [experimental.diagnostics.import](/config/experimental#experimental-diagnostics-import)
+
+Print a hint when test files repeatedly evaluate the same module graph (typical for barrel-file imports) and `isolate: false` would evaluate it once per worker. (default: `true`)
+
+### experimental.diagnostics.transform
+
+- **CLI:** `--experimental.diagnostics.transform`
+- **Config:** [experimental.diagnostics.transform](/config/experimental#experimental-diagnostics-transform)
+
+Print a hint when transforming modules dominates the run and `experimental.fsModuleCache` would persist the results across runs. (default: `true`)

@@ -16,7 +16,7 @@ import { groupBy } from '../../utils/base'
 import { isTTY } from '../../utils/env'
 import { getSuites, getTestName, getTests, hasFailed, hasFailedSnapshot } from '../../utils/tasks'
 import { generateCodeFrame, printStack } from '../printError'
-import { getEnvironmentDiagnostics, isSavingWorthHinting } from './diagnostics'
+import { getEnvironmentDiagnostics, getImportDiagnostics, getTransformDiagnostics, isSavingWorthHinting } from './diagnostics'
 import { computeDurationBreakdown, formatDurationBreakdown } from './durationBreakdown'
 import { BENCH_TABLE_HEAD, computeBenchColumnWidths, padBenchRow, renderBenchmarkRow } from './renderers/benchmark-table'
 import { F_CHECK, F_DOWN_RIGHT, F_POINTER } from './renderers/figures'
@@ -659,8 +659,14 @@ export abstract class BaseReporter implements Reporter {
 
     this.reportImportDurations()
 
-    const environmentHinted = this.reportEnvironmentDiagnostic(files)
-    if (!environmentHinted) {
+    // at most one hint per family: the environment hint is the most specific,
+    // the import hint explains the same `isolate` remedy through module data,
+    // and the transform hint (a cache, helping the *next* run) only speaks up
+    // when neither applies
+    const hinted = this.reportEnvironmentDiagnostic(files)
+      || this.reportImportDiagnostic(files)
+      || this.reportTransformDiagnostic(files)
+    if (!hinted) {
       this.reportIsolateDiagnostic(files)
     }
 
@@ -750,6 +756,140 @@ export abstract class BaseReporter implements Reporter {
       this.log(
         padSummaryTitle(''),
         c.dim('learn more: https://vitest.dev/guide/improving-performance#test-environments'),
+      )
+    }
+
+    return true
+  }
+
+  /**
+   * Surfaces repeated evaluation of the same module graph: with `isolate: true`
+   * every test file re-imports its whole graph, so suites where files share
+   * most of their modules (typically through barrel files) pay the graph cost
+   * once per file. The duplication is measured from server-side fetch counts,
+   * so suites with disjoint per-file graphs stay quiet.
+   */
+  private reportImportDiagnostic(files: File[]): boolean {
+    if (this.ctx.config.watch || this.ctx.state.blobs || !this.ctx.config.experimental.diagnostics.import) {
+      return false
+    }
+
+    const executionTime = this.end - this.start
+    const maxWorkers = this.getEffectiveMaxWorkers()
+    const transformTimes = this.ctx.state.transformTimes
+    const inputs = this.ctx.projects.map((project) => {
+      const projectFiles = files.filter(file => (file.projectName || '') === project.name)
+      let importTime = 0
+      let trackedTime = transformTimes.get(project.name) || 0
+      for (const file of projectFiles) {
+        importTime += file.collectDuration || 0
+        trackedTime
+          += (file.environmentLoad || 0)
+            + (file.setupDuration || 0)
+            + (file.collectDuration || 0)
+            + (file.result?.duration || 0)
+      }
+      const durations = this.ctx.state.metadata[project.name]?.duration
+      return {
+        name: project.name,
+        pool: project.config.pool,
+        isolate: project.config.isolate,
+        browser: project.config.browser.enabled,
+        isolateProvided: project.config.providedOptions.isolate,
+        importTime,
+        trackedTime,
+        fetchCounts: durations ? Object.values(durations).map(times => times.length) : [],
+        fileCount: projectFiles.length,
+        parallelism: Math.max(1, Math.min(projectFiles.length, maxWorkers)),
+        executionTime,
+      }
+    })
+
+    const diagnostics = getImportDiagnostics(inputs)
+    if (!diagnostics.length) {
+      return false
+    }
+
+    for (const diagnostic of diagnostics) {
+      const project = this.ctx.projects.find(p => p.name === diagnostic.name)
+      this.log()
+      this.log(
+        padSummaryTitle('Import'),
+        formatProjectName(project)
+        + c.yellow(`${diagnostic.uniqueModules} modules were evaluated ${diagnostic.totalFetches} times`)
+        + c.dim(` · ${formatTime(diagnostic.importTime)} total, ${Math.round(diagnostic.share * 100)}% of tracked time`),
+      )
+      this.log(
+        padSummaryTitle(''),
+        c.dim(`~${formatTime(diagnostic.estimatedSaving)} faster with `)
+        + c.yellow('isolate: false')
+        + c.dim(' — shared modules are evaluated once per worker instead of once per file'),
+      )
+      this.log(
+        padSummaryTitle(''),
+        c.dim('learn more: https://vitest.dev/guide/improving-performance#test-isolation'),
+      )
+    }
+
+    return true
+  }
+
+  /**
+   * Surfaces transform-dominated runs: without the fs module cache every
+   * `vitest run` transforms the whole module graph from scratch. Enabling
+   * `experimental.fsModuleCache` persists the results so the next run skips
+   * them.
+   */
+  private reportTransformDiagnostic(files: File[]): boolean {
+    if (this.ctx.config.watch || this.ctx.state.blobs || !this.ctx.config.experimental.diagnostics.transform) {
+      return false
+    }
+
+    const executionTime = this.end - this.start
+    const transformTimes = this.ctx.state.transformTimes
+    const inputs = this.ctx.projects.map((project) => {
+      const projectFiles = files.filter(file => (file.projectName || '') === project.name)
+      const transformTime = transformTimes.get(project.name) || 0
+      let trackedTime = transformTime
+      for (const file of projectFiles) {
+        trackedTime
+          += (file.environmentLoad || 0)
+            + (file.setupDuration || 0)
+            + (file.collectDuration || 0)
+            + (file.result?.duration || 0)
+      }
+      return {
+        name: project.name,
+        transformTime,
+        trackedTime,
+        fsModuleCache: project.config.experimental.fsModuleCache === true,
+        fsModuleCacheProvided: project.config.providedOptions.fsModuleCache,
+        executionTime,
+      }
+    })
+
+    const diagnostics = getTransformDiagnostics(inputs)
+    if (!diagnostics.length) {
+      return false
+    }
+
+    for (const diagnostic of diagnostics) {
+      const project = this.ctx.projects.find(p => p.name === diagnostic.name)
+      this.log()
+      this.log(
+        padSummaryTitle('Transform'),
+        formatProjectName(project)
+        + c.yellow(`transforming modules took ${formatTime(diagnostic.transformTime)}`)
+        + c.dim(` · ${Math.round(diagnostic.share * 100)}% of tracked time, re-done on every run`),
+      )
+      this.log(
+        padSummaryTitle(''),
+        c.dim('persist transforms across runs with ')
+        + c.yellow('experimental: { fsModuleCache: true }'),
+      )
+      this.log(
+        padSummaryTitle(''),
+        c.dim('learn more: https://vitest.dev/guide/improving-performance#caching-between-reruns'),
       )
     }
 

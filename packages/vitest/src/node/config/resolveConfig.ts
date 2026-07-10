@@ -182,6 +182,7 @@ export function captureProvidedOptions(
     pool: sources.some(source => source?.pool != null),
     isolate: sources.some(source => source?.isolate != null),
     environment: sources.some(source => source?.environment != null || source?.dom),
+    fsModuleCache: sources.some(source => source?.experimental?.fsModuleCache != null),
   }
 }
 
@@ -1016,13 +1017,15 @@ export function resolveTestConfig(
   resolved.experimental.importDurations.thresholds.warn ??= 100
   resolved.experimental.importDurations.thresholds.danger ??= 500
 
-  const diagnostics = (resolved.experimental.diagnostics as boolean | { isolate?: boolean; environment?: boolean } | undefined)
+  const diagnostics = (resolved.experimental.diagnostics as boolean | { isolate?: boolean; environment?: boolean; import?: boolean; transform?: boolean } | undefined)
     ?? true
   resolved.experimental.diagnostics = typeof diagnostics === 'boolean'
-    ? { isolate: diagnostics, environment: diagnostics }
+    ? { isolate: diagnostics, environment: diagnostics, import: diagnostics, transform: diagnostics }
     : {
         isolate: diagnostics.isolate ?? true,
         environment: diagnostics.environment ?? true,
+        import: diagnostics.import ?? true,
+        transform: diagnostics.transform ?? true,
       }
 
   if (typeof resolved.experimental.vcsProvider === 'string' && resolved.experimental.vcsProvider !== 'git') {

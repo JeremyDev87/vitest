@@ -155,6 +155,8 @@ The `isolate: false` candidate is additionally validated by running the suite tw
 
 Doctor also probes lower [`maxWorkers`](/config/maxworkers) values on top of the winning configuration: every worker funnels its transform requests through the single main-thread Vite server, so past a certain count more workers make the run slower, not faster. Starting from half the current worker count, doctor keeps halving while the suite gets at least 5% faster, and includes the winning value in the recommendation.
 
+Two candidates go beyond pools. Suites that run entirely on `jsdom` are also measured under `environment: 'happy-dom'` when the package is installed - it is usually considerably cheaper to create, and a suite that passes under it likely tolerates the swap (though happy-dom implements the DOM differently, so double-check layout- or navigation-dependent tests). And when the [fs module cache](/config/experimental#experimental-fsmodulecache) is off, doctor measures `experimental: { fsModuleCache: true }` after an untimed priming run that populates the cache, so the reported number is what repeated runs pay.
+
 A failing candidate is as informative as a fast one: doctor prints an excerpt of its errors, so "this suite cannot run on `vmThreads`" comes with the failing tests and the reason. If the suite fails under the *current* configuration, doctor aborts and shows the errors - it needs a green baseline to compare against.
 
 Short suites are measured multiple times and the best time is reported, so the comparison reflects a warm steady state. Since doctor runs the full suite several times, expect it to take a multiple of a normal run's time. See [Improving Performance](/guide/improving-performance) for the trade-offs behind every candidate.
